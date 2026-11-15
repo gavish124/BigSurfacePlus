@@ -512,11 +512,14 @@ bool SurfaceSerialHubDriver::init(OSDictionary *properties) {
     return true;
 }
 
+#define SSH_STAGE(p,n) (p)->setProperty("SSHStage", (unsigned long long)(n), 32)
+
 IOService* SurfaceSerialHubDriver::probe(IOService *provider, SInt32 *score) {
     if (!super::probe(provider, score))
         return nullptr;
     
     acpi_device = OSDynamicCast(IOACPIPlatformDevice, provider);
+    SSH_STAGE(provider,1);
     if (!acpi_device)
         return nullptr;
     
@@ -526,11 +529,13 @@ IOService* SurfaceSerialHubDriver::probe(IOService *provider, SInt32 *score) {
     }
     
     gpio_controller = getGPIOController();
+    SSH_STAGE(provider, gpio_controller ? 3 : 2);
     if (!gpio_controller) {
         LOG("Could not find GPIO controller, exiting");
         return nullptr;
     }
     uart_controller = getUARTController();
+    SSH_STAGE(provider, uart_controller ? 5 : 4);
     if (!uart_controller) {
         LOG("Could not find UART controller, exiting");
         return nullptr;
@@ -542,6 +547,7 @@ IOService* SurfaceSerialHubDriver::probe(IOService *provider, SInt32 *score) {
     for (int i=0; i < SSH_RING_BUFFER_SIZE; i++)
         ring_buffer[i].buffer = new UInt8[fifo_size];
     
+    SSH_STAGE(provider,6);
     LOG("Surface Serial Hub found!");
     return this;
 }
@@ -549,6 +555,7 @@ IOService* SurfaceSerialHubDriver::probe(IOService *provider, SInt32 *score) {
 bool SurfaceSerialHubDriver::start(IOService *provider) {
     UInt32 version;
     UInt8 ret;
+    SSH_STAGE(provider,10);
     if (!super::start(provider))
         return false;
     
@@ -588,6 +595,7 @@ bool SurfaceSerialHubDriver::start(IOService *provider) {
     }
     work_loop->addEventSource(gpio_interrupt);
     gpio_interrupt->enable();
+    SSH_STAGE(provider,14);
     
     if (uart_controller->requestConnect(this, OSMemberFunctionCast(VoodooUARTController::MessageHandler, this, &SurfaceSerialHubDriver::bufferReceived), baudrate, data_bits, stop_bits, parity, flow_control) != kIOReturnSuccess) {
         LOG("Failed to connect to UART controller!");
@@ -599,6 +607,7 @@ bool SurfaceSerialHubDriver::start(IOService *provider) {
         goto exit_connected;
     }
     LOG("SAM version %u.%u.%u", (version >> 24) & 0xff, (version >> 8) & 0xffff, version & 0xff);
+    SSH_STAGE(provider,16);
     
     if (getResponse(SSH_TC_SAM, SSH_TID_PRIMARY, 0, SSH_CID_SAM_D0_ENTRY, nullptr, 0, true, &ret, 1) != kIOReturnSuccess || ret != 0)
         DBG_LOG("Unexpected response from D0-entry notification, ret=%x", ret);
@@ -613,8 +622,10 @@ bool SurfaceSerialHubDriver::start(IOService *provider) {
     return true;
     
 exit_connected:
+    SSH_STAGE(provider,98);
     uart_controller->requestDisconnect(this);
 exit:
+    provider->setProperty("SSHExit", (unsigned long long)1, 32);
     releaseResources();
     return false;
 }
@@ -835,6 +846,13 @@ IOReturn SurfaceSerialHubDriver::getDeviceResources() {
     fifo_size = 64; //parser.uart_info.rx_fifo;
     
     gpio_pin = parser.gpio_interrupts.pin_number;
+    acpi_device->setProperty("SSHBaud", (unsigned long long)(baudrate), 32);
+    acpi_device->setProperty("SSHData", (unsigned long long)(data_bits), 32);
+    acpi_device->setProperty("SSHStop", (unsigned long long)(stop_bits), 32);
+    acpi_device->setProperty("SSHParity", (unsigned long long)(parity), 32);
+    acpi_device->setProperty("SSHFlow", (unsigned long long)(flow_control), 32);
+    acpi_device->setProperty("SSHGpioPin", (unsigned long long)(gpio_pin), 32);
+    acpi_device->setProperty("SSHFifo", (unsigned long long)(fifo_size), 32);
     gpio_irq = 0x00000001; // Set irq type to edge rising
     
     return kIOReturnSuccess;
