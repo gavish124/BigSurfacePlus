@@ -512,7 +512,13 @@ bool SurfaceSerialHubDriver::init(OSDictionary *properties) {
     return true;
 }
 
+#ifdef SSH_DEBUG
 #define SSH_STAGE(p,n) (p)->setProperty("SSHStage", (unsigned long long)(n), 32)
+#define SSH_PROP(p,k,v) (p)->setProperty(k, (unsigned long long)(v), 32)
+#else
+#define SSH_STAGE(p,n) ((void)0)
+#define SSH_PROP(p,k,v) ((void)0)
+#endif
 
 IOService* SurfaceSerialHubDriver::probe(IOService *provider, SInt32 *score) {
     if (!super::probe(provider, score))
@@ -625,7 +631,7 @@ exit_connected:
     SSH_STAGE(provider,98);
     uart_controller->requestDisconnect(this);
 exit:
-    provider->setProperty("SSHExit", (unsigned long long)1, 32);
+    SSH_PROP(provider, "SSHExit", 1);
     releaseResources();
     return false;
 }
@@ -846,13 +852,13 @@ IOReturn SurfaceSerialHubDriver::getDeviceResources() {
     fifo_size = 64; //parser.uart_info.rx_fifo;
     
     gpio_pin = parser.gpio_interrupts.pin_number;
-    acpi_device->setProperty("SSHBaud", (unsigned long long)(baudrate), 32);
-    acpi_device->setProperty("SSHData", (unsigned long long)(data_bits), 32);
-    acpi_device->setProperty("SSHStop", (unsigned long long)(stop_bits), 32);
-    acpi_device->setProperty("SSHParity", (unsigned long long)(parity), 32);
-    acpi_device->setProperty("SSHFlow", (unsigned long long)(flow_control), 32);
-    acpi_device->setProperty("SSHGpioPin", (unsigned long long)(gpio_pin), 32);
-    acpi_device->setProperty("SSHFifo", (unsigned long long)(fifo_size), 32);
+    SSH_PROP(acpi_device, "SSHBaud", baudrate);
+    SSH_PROP(acpi_device, "SSHData", data_bits);
+    SSH_PROP(acpi_device, "SSHStop", stop_bits);
+    SSH_PROP(acpi_device, "SSHParity", parity);
+    SSH_PROP(acpi_device, "SSHFlow", flow_control);
+    SSH_PROP(acpi_device, "SSHGpioPin", gpio_pin);
+    SSH_PROP(acpi_device, "SSHFifo", fifo_size);
     gpio_irq = 0x00000001; // Set irq type to edge rising
     
     return kIOReturnSuccess;
