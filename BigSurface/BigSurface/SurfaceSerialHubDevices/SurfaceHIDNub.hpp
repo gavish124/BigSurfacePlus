@@ -10,6 +10,7 @@
 #define SurfaceHIDNub_hpp
 
 #include "../SurfaceSerialHub/SurfaceSerialHubDriver.hpp"
+#include <kern/thread_call.h>
 
 enum SurfaceHIDDescriptorEntryType : UInt8 {
     SurfaceHIDDescriptorEntry       = 0,
@@ -92,6 +93,12 @@ private:
     EventHandler            handler {nullptr};
 
     bool    legacy {true};
+
+    thread_call_t reenable_call {nullptr};
+    UInt8 tpd_mode[16];
+    UInt16 tpd_mode_len {0};
+    static void hotplugThread(thread_call_param_t p0, thread_call_param_t p1);
+    void hotplugWork(bool present);
 
     IOReturn getDescriptorData(SurfaceHIDDeviceType device, SurfaceHIDDescriptorEntryType entry, UInt8 *buffer, UInt16 buffer_len);
     

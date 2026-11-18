@@ -46,11 +46,17 @@ bool SurfaceHIDNub::start(IOService *provider) {
     ssh->joinPMtree(this);
     registerPowerDriver(this, myIOPMPowerStates, kIOPMNumberPowerStates);
     
+    reenable_call = thread_call_allocate(hotplugThread, this);
     registerService();
     return true;
 }
 
 void SurfaceHIDNub::stop(IOService *provider) {
+    if (reenable_call) {
+        thread_call_cancel_wait(reenable_call);
+        thread_call_free(reenable_call);
+        reenable_call = nullptr;
+    }
     unregisterHIDEvent(target);
     super::stop(provider);
 }
@@ -80,6 +86,9 @@ IOReturn SurfaceHIDNub::registerHIDEvent(OSObject* owner, EventHandler _handler)
     if (ret != kIOReturnSuccess)
         return ret;
     
+    // The type cover announces attach/detach on the KIP category (cid 0x2c, data 0/1).
+    if (!legacy)
+        ssh->registerEvent(this, SurfaceSerialEventHostManagedV1, SSH_TC_KIP, 0x00);
     target = owner;
     handler = _handler;
     return kIOReturnSuccess;
@@ -94,6 +103,7 @@ void SurfaceHIDNub::unregisterHIDEvent(OSObject* owner) {
         else {
             ssh->unregisterEvent(this, SurfaceSerialEventHostManagedV2, SSH_TC_HID, SurfaceKeyboardDevice);
             ssh->unregisterEvent(this, SurfaceSerialEventHostManagedV2, SSH_TC_HID, SurfaceTouchpadDevice);
+            ssh->unregisterEvent(this, SurfaceSerialEventHostManagedV1, SSH_TC_KIP, 0x00);
         }
         target = nullptr;
         handler = nullptr;
@@ -101,8 +111,46 @@ void SurfaceHIDNub::unregisterHIDEvent(OSObject* owner) {
         LOG("HID event not registered for this handler!");
 }
 
+void SurfaceHIDNub::hotplugThread(thread_call_param_t p0, thread_call_param_t p1) {
+    static_cast<SurfaceHIDNub *>(p0)->hotplugWork((uintptr_t)p1 == 2);
+}
+
+void SurfaceHIDNub::hotplugWork(bool present) {
+    if (!present) {
+        // Cover removed: release everything so no key stays held down.
+        UInt8 kbd[12] = {0x01}, cc[3] = {0x03}, tpd[12] = {0x04};
+        if (handler) {
+            handler(target, this, SurfaceKeyboardDevice, kbd, sizeof(kbd));
+            IOSleep(10);
+            handler(target, this, SurfaceKeyboardDevice, cc, sizeof(cc));
+            IOSleep(10);
+            handler(target, this, SurfaceTouchpadDevice, tpd, sizeof(tpd));
+        }
+        return;
+    }
+    // Cover attached: ask for the keyboard and touchpad events again.
+    for (int i = 0; i < 3; i++) {
+        IOSleep(i ? 500 : 200);
+        IOReturn a = ssh->registerEvent(nullptr, SurfaceSerialEventHostManagedV2, SSH_TC_HID, SurfaceKeyboardDevice);
+        IOReturn b = ssh->registerEvent(nullptr, SurfaceSerialEventHostManagedV2, SSH_TC_HID, SurfaceTouchpadDevice);
+        if (a == kIOReturnSuccess && b == kIOReturnSuccess)
+            break;
+    }
+    if (tpd_mode_len) {
+        UInt8 tmp[16];
+        memcpy(tmp, tpd_mode, tpd_mode_len);
+        IOSleep(50);
+        setHIDRawReport(SurfaceTouchpadDevice, 3, true, tmp, tpd_mode_len);
+    }
+}
+
 void SurfaceHIDNub::eventReceived(UInt8 tc, UInt8 tid, UInt8 iid, UInt8 cid, UInt8 *data_buffer, UInt16 length) {
     SurfaceHIDDeviceType device;
+    if (tc == SSH_TC_KIP) {
+        if (cid == 0x2c && length >= 1 && !legacy && reenable_call)
+            thread_call_enter1(reenable_call, (thread_call_param_t)(uintptr_t)(data_buffer[0] ? 2 : 1));
+        return;
+    }
     if (legacy) {
         if ((cid != SSH_EVENT_CID_KBD_INPUT_GENERIC && cid != SSH_EVENT_CID_KBD_INPUT_HOTKEYS)
             || tid != SSH_TID_SECONDARY
@@ -233,6 +281,10 @@ void SurfaceHIDNub::setHIDRawReport(SurfaceHIDDeviceType device, UInt8 report_id
     if (!legacy) {
         UInt8 cid = feature ? SSH_CID_HID_SET_FEAT_REPORT : SSH_CID_HID_OUT_REPORT;
         buffer[0] = report_id;
+        if (feature && device == SurfaceTouchpadDevice && report_id == 3 && len <= sizeof(tpd_mode)) {
+            memcpy(tpd_mode, buffer, len);
+            tpd_mode_len = len;
+        }
         ssh->sendCommand(SSH_TC_HID, SSH_TID_SECONDARY, device, cid, buffer, len, true);
     }
 }
